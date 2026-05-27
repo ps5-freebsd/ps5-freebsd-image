@@ -40,7 +40,7 @@ jobs:
         run: |
           INPUT="${{ inputs.distro || 'ubuntu2604' }}"
           if [ "$INPUT" = "all" ]; then
-            echo 'distros=["ubuntu2604","arch","cachyos","kali"]' >> "$GITHUB_OUTPUT"
+            echo 'distros=["kali","ubuntu2604","arch","cachyos"]' >> "$GITHUB_OUTPUT"
           else
             echo "distros=[\"$INPUT\"]" >> "$GITHUB_OUTPUT"
           fi
@@ -59,9 +59,18 @@ jobs:
         distro: ${{ fromJson(needs.matrix.outputs.distros) }}
 
     env:
-      CACHE_DIR: /home/opc/ccache
+      CCACHE_DIR: /home/opc/ccache
 
     steps:
+      - name: Clean image workspace
+        run: |
+          set -euo pipefail
+          if [ -z "${GITHUB_WORKSPACE:-}" ] || [ "$GITHUB_WORKSPACE" = "/" ]; then
+            echo "Invalid GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          sudo rm -rf "$GITHUB_WORKSPACE/image"
+
       - name: Checkout image builder
         uses: actions/checkout@v6
         with:
