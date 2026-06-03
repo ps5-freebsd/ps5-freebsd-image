@@ -91,7 +91,7 @@ jobs:
 
       - name: Compress image
         run: |
-          xz -T0 -9 -c image/output/ps5-${{ matrix.distro }}.img \
+          xz -T0 -4 -c image/output/ps5-${{ matrix.distro }}.img \
             > image/output/ps5-${{ matrix.distro }}.img.xz
 
       - name: Upload to R2
