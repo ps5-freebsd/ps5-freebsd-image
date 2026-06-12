@@ -27,10 +27,17 @@ RUN mkdir -p /root/go/src/github.com/lxc/ && \
     rm -rf /root/go/src /root/go/pkg
 
 # Fedora 41+ base images ship as OCI archives; distrobuilder's fedora-http
-# downloader unpacks them with umoci/skopeo.
+# downloader unpacks them with umoci/skopeo. Ubuntu's apt umoci (0.4.7) is
+# built with an old Go that crashes under qemu on the self-hosted arm64 runner
+# ("fatal error: lfstack.push invalid packing"), because the emulated amd64
+# process inherits the host's 52-bit-VA high addresses. Build umoci from source
+# with the Go toolchain installed above (>=1.21 packs high addresses correctly).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    umoci skopeo \
+    skopeo \
     && rm -rf /var/lib/apt/lists/*
+RUN go install github.com/opencontainers/umoci/cmd/umoci@v0.5.0 && \
+    cp /root/go/bin/umoci /usr/local/bin/umoci && \
+    rm -rf /root/go/pkg
 
 WORKDIR /build
 
