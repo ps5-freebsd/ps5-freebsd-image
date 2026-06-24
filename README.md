@@ -1,6 +1,10 @@
-# PS5 Linux Image Builder
+# PS5 Linux / FreeBSD Image Builder
 
-Builds bootable Linux USB images for PlayStation 5 using Docker containers. Supports Ubuntu 26.04, Arch, CachyOS (Gamescope + Steam), Fedora (GNOME), individually or as a multi-distro image with kexec switching.
+Builds bootable Linux USB images and staged FreeBSD USB images for PlayStation
+5 using Docker containers. Linux targets support Ubuntu 26.04, Arch, CachyOS
+(Gamescope + Steam), Fedora (GNOME), individually or as a multi-distro image
+with kexec switching. The FreeBSD target builds the USB layout expected by
+`ps5-freebsd-loader`.
 
 ## Prerequisites
 
@@ -27,10 +31,13 @@ OR
 
 OR
 
-OR
-
 # Build Fedora (GNOME desktop)
 ./build_image.sh --distro fedora
+
+OR
+
+# Build a FreeBSD image from a built FreeBSD DESTDIR
+./build_image.sh --distro freebsd --skip-freebsd-build --freebsd-root /path/to/freebsd-root
 
 OR
 
@@ -38,7 +45,10 @@ OR
 ./build_image.sh --distro all
 ```
 
-The script auto-clones the kernel source, applies PS5 patches, compiles, and builds the image. Subsequent runs reuse cached artifacts automatically. Press Ctrl+C at any time to abort cleanly.
+For Linux targets, the script auto-clones the kernel source, applies PS5
+patches, compiles, and builds the image. FreeBSD targets use a FreeBSD source
+tree, prebuilt DESTDIR, or Docker+QEMU build VM. Subsequent runs reuse cached
+artifacts automatically. Press Ctrl+C at any time to abort cleanly.
 
 ## Flash to USB
 
@@ -50,9 +60,17 @@ sudo dd if=output/ps5-ubuntu2604.img of=/dev/sdX bs=4M status=progress
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--distro` | `ubuntu2604`, `arch`, `cachyos`, `fedora`, or `all` | `ubuntu2604` |
+| `--distro` | `ubuntu2604`, `arch`, `cachyos`, `fedora`, `freebsd`, or `all` | `ubuntu2604` |
 | `--kernel` | Path to kernel source directory | auto-clone version selected by PS5 patch set |
-| `--img-size` | Disk image size in MB | `12000` (`32000` for `all`) |
+| `--freebsd-src` | Path to FreeBSD source tree for `--distro freebsd` | `../freebsd-stable15` when present |
+| `--freebsd-root` | Prebuilt FreeBSD DESTDIR/root tree for `--distro freebsd` | `work/freebsd-root` |
+| `--freebsd-kernel` | Kernel ELF copied to `/PS5/FreeBSD/kernel` | `$freebsd_root/boot/kernel/kernel` |
+| `--freebsd-build-backend` | FreeBSD build backend: `auto`, `host`, or `qemu` | `auto` |
+| `--freebsd-vm-image` | FreeBSD QEMU base image for the `qemu` backend | unset |
+| `--freebsd-vm-user` | SSH user for the `qemu` backend | `freebsd` |
+| `--freebsd-vm-ssh-key` | SSH private key for the `qemu` backend | unset |
+| `--skip-freebsd-build` | Reuse `--freebsd-root` instead of running FreeBSD build/install | off |
+| `--img-size` | Disk image size in MB | `12000` (`8000` for `freebsd`, `32000` for `all`) |
 | `--clean` | Remove all cached build artifacts and start fresh | off |
 | `--kernel-only` | Build and package the kernel only, then exit | off |
 | `--patches-ref` | Branch, tag, or commit SHA for patches | `v1.2` |
@@ -90,6 +108,65 @@ Logs: /path/to/build.log
 ```
 
 All verbose output goes to `build.log`. The terminal shows a spinner with live progress.
+
+## FreeBSD Image
+
+The FreeBSD target creates a GPT image with:
+
+| Partition | Type | Label | Content |
+|-----------|------|-------|---------|
+| p1 | FAT32 ESP | `PS5BOOT` | `/PS5/FreeBSD/kernel`, `kenv.txt`, `vram.txt` |
+| p2 | FreeBSD UFS | `ps5root` | FreeBSD root filesystem |
+
+The FAT partition matches the direct handoff contract in `ps5-freebsd-loader`:
+
+- `/PS5/FreeBSD/kernel` is the required amd64 FreeBSD kernel ELF.
+- `/PS5/FreeBSD/kenv.txt` provides `vfs.root.mountfrom=ufs:/dev/gpt/ps5root`
+  and early PS5 tunables.
+- `/PS5/FreeBSD/vram.txt` keeps the same hex VRAM size convention as the Linux
+  images.
+
+To build from an already-installed FreeBSD root:
+
+```bash
+./build_image.sh --distro freebsd \
+  --skip-freebsd-build \
+  --freebsd-root /path/to/freebsd-root \
+  --freebsd-kernel /path/to/freebsd-root/boot/kernel/kernel
+```
+
+To build FreeBSD on a native FreeBSD host:
+
+```bash
+./build_image.sh --distro freebsd \
+  --freebsd-build-backend host \
+  --freebsd-src ../freebsd-stable15
+```
+
+On Linux hosts, prefer the Docker+QEMU backend so `buildworld` and
+`buildkernel KERNCONF=PS5` run inside a native FreeBSD VM:
+
+```bash
+./build_image.sh --distro freebsd \
+  --freebsd-build-backend qemu \
+  --freebsd-src ../freebsd-stable15 \
+  --freebsd-vm-image /path/to/freebsd-build-vm.qcow2 \
+  --freebsd-vm-user freebsd \
+  --freebsd-vm-ssh-key ~/.ssh/freebsd-build
+```
+
+The QEMU VM image must boot FreeBSD, run SSH, allow the selected user to use
+passwordless `sudo make`, and have enough disk space for `buildworld`,
+`buildkernel KERNCONF=PS5`, and the installed DESTDIR. The builder copies the
+source tree into the VM, runs the native FreeBSD build/install sequence, copies
+the resulting DESTDIR back to `work/freebsd-root`, then assembles the PS5 USB
+image on the Linux host.
+
+The FreeBSD OCI images on Docker Hub are useful as future native-FreeBSD
+container inputs or root filesystem seeds, but they do not replace the QEMU
+backend on a Linux Docker host. Linux containers share the Linux host kernel,
+while this build needs FreeBSD userland and kernel semantics for `buildworld`
+and `buildkernel`.
 
 ## Distributions
 
@@ -136,10 +213,15 @@ build_image.sh                  # Image builder (also supports --kernel-only)
 docker/
   kernel-builder/               # Kernel compilation container
   kernel-builder-arch/          # Repackages .deb kernel as .pkg.tar.zst
+  freebsd-image-builder/        # FreeBSD GPT/FAT/UFS image assembler
+  freebsd-vm-builder/           # Linux container that runs FreeBSD in QEMU
   image-builder/
     Dockerfile                  # Image building container (distrobuilder)
     entrypoint.sh               # Single-distro build logic
     entrypoint-multi.sh         # Multi-distro build logic
+scripts/
+  build-freebsd-root.sh         # Native FreeBSD buildworld/installworld helper
+  build-freebsd-root-qemu.sh    # QEMU-in-Docker FreeBSD build helper
 distros/
   ubuntu2604/                   # Ubuntu 26.04 (Resolute)
   arch/                         # Arch Linux
@@ -147,6 +229,8 @@ distros/
   shared/                       # Kernel postinst hooks (single + multi)
 boot/
   cmdline.txt                   # Kernel cmdline template (__DISTRO__ placeholder)
+  freebsd/kenv.txt              # FreeBSD loader kenv for direct handoff
+  freebsd/vram.txt              # FreeBSD VRAM size
   vram.txt                      # VRAM allocation
   kexec-{ubuntu2604,arch,cachyos}.sh
 work/                           # Build artifacts (auto-created)

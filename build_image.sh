@@ -6,6 +6,14 @@ export DOCKER_DEFAULT_PLATFORM=linux/amd64
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DISTRO="ubuntu2604"
 KERNEL_SRC=""
+FREEBSD_SRC=""
+FREEBSD_ROOT=""
+FREEBSD_KERNEL=""
+FREEBSD_BUILD=true
+FREEBSD_BUILD_BACKEND="${FREEBSD_BUILD_BACKEND:-auto}"
+FREEBSD_VM_IMAGE="${FREEBSD_VM_IMAGE:-}"
+FREEBSD_VM_USER="${FREEBSD_VM_USER:-freebsd}"
+FREEBSD_VM_SSH_KEY="${FREEBSD_VM_SSH_KEY:-}"
 CLEAN=false
 IMG_SIZE=12000
 KERNEL_ONLY=false
@@ -17,8 +25,16 @@ usage() {
     echo "Usage: $0 [--distro <distro>] [--kernel <path>] [--img-size <MB>] [--clean]"
     echo ""
     echo "Options:"
-    echo "  --distro     Distribution to build: ubuntu2604, arch, cachyos, fedora, proxmox, debian, bazzite, bazzite-deck, batocera, all (default: ubuntu2604)"
+    echo "  --distro     Distribution to build: ubuntu2604, arch, cachyos, fedora, proxmox, debian, bazzite, bazzite-deck, batocera, freebsd, all (default: ubuntu2604)"
     echo "  --kernel     Path to kernel source directory (default: auto-clone to work/linux/)"
+    echo "  --freebsd-src     Path to FreeBSD source tree (default: ../freebsd-stable15 when present)"
+    echo "  --freebsd-root    Path to prebuilt FreeBSD DESTDIR/root tree"
+    echo "  --freebsd-kernel  Path to FreeBSD kernel ELF for /PS5/FreeBSD/kernel"
+    echo "  --freebsd-build-backend  FreeBSD build backend: auto, host, qemu (default: auto)"
+    echo "  --freebsd-vm-image      FreeBSD QEMU base qcow2/raw image for qemu backend"
+    echo "  --freebsd-vm-user       SSH user for qemu backend (default: freebsd)"
+    echo "  --freebsd-vm-ssh-key    SSH private key for qemu backend"
+    echo "  --skip-freebsd-build  Reuse --freebsd-root instead of running buildworld/installworld"
     echo "  --img-size   Disk image size in MB (default: 12000, 32000 for --distro all)"
     echo "  --clean      Remove all cached build artifacts and start from scratch"
     echo "  --clean-only Remove all cached build artifacts and exit"
@@ -31,6 +47,14 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --distro)    DISTRO="$2";          shift 2 ;;
         --kernel)    KERNEL_SRC="$2";      shift 2 ;;
+        --freebsd-src) FREEBSD_SRC="$2";   shift 2 ;;
+        --freebsd-root) FREEBSD_ROOT="$2"; shift 2 ;;
+        --freebsd-kernel) FREEBSD_KERNEL="$2"; shift 2 ;;
+        --freebsd-build-backend) FREEBSD_BUILD_BACKEND="$2"; shift 2 ;;
+        --freebsd-vm-image) FREEBSD_VM_IMAGE="$2"; shift 2 ;;
+        --freebsd-vm-user) FREEBSD_VM_USER="$2"; shift 2 ;;
+        --freebsd-vm-ssh-key) FREEBSD_VM_SSH_KEY="$2"; shift 2 ;;
+        --skip-freebsd-build) FREEBSD_BUILD=false; shift ;;
         --img-size)  IMG_SIZE="$2";        shift 2 ;;
         --clean)     CLEAN=true;           shift ;;
         --clean-only) CLEAN=true; CLEAN_EXIT=true; shift ;;
@@ -64,6 +88,9 @@ DOCKER_NAME="ps5-build-$$"
 if [ "$DISTRO" = "all" ] && [ "$IMG_SIZE" = "12000" ]; then
     IMG_SIZE=32000
 fi
+if [ "$DISTRO" = "freebsd" ] && [ "$IMG_SIZE" = "12000" ]; then
+    IMG_SIZE=8000
+fi
 
 # Bazzite assembles the OCI rootfs + an embedded /sysroot/ostree/repo/objects
 # (a deduplicated second copy of the same content) + the linux-ps5 kernel —
@@ -87,9 +114,26 @@ if [ -z "$FORMAT" ]; then
     case "$DISTRO" in
         arch|cachyos)        FORMAT="arch" ;;
         fedora|bazzite*)     FORMAT="rpm"  ;;
+        freebsd)             FORMAT="freebsd" ;;
         all)                 FORMAT="all"  ;;
         *)                   FORMAT="deb"  ;;
     esac
+fi
+
+FREEBSD_DEFAULT_SRC="$SCRIPT_DIR/../freebsd-stable15"
+FREEBSD_ROOT_DEFAULT="$SCRIPT_DIR/work/freebsd-root"
+if [ -z "$FREEBSD_SRC" ] && [ -d "$FREEBSD_DEFAULT_SRC/sys" ]; then
+    FREEBSD_SRC="$FREEBSD_DEFAULT_SRC"
+fi
+if [ -z "$FREEBSD_ROOT" ]; then
+    FREEBSD_ROOT="$FREEBSD_ROOT_DEFAULT"
+fi
+if [ "$FREEBSD_BUILD_BACKEND" = "auto" ]; then
+    if [ "$(uname -s)" = "FreeBSD" ]; then
+        FREEBSD_BUILD_BACKEND="host"
+    else
+        FREEBSD_BUILD_BACKEND="qemu"
+    fi
 fi
 
 KERNEL_BUILDER_PLATFORM="linux/amd64"
@@ -146,39 +190,57 @@ fi
 
 # --- Build plan summary ---
 echo ""
-echo "PS5 Linux Image Builder"
-echo "======================="
-if [ "$KERNEL_ONLY" = true ]; then
-    echo "  Mode:         kernel only"
-    echo "  Format:       $FORMAT"
-else
-    echo "  Distro:       $DISTRO"
-    [ "$DISTRO" = "all" ] && echo "                ($MULTI_DISTROS)"
+if [ "$DISTRO" = "freebsd" ]; then
+    echo "PS5 FreeBSD Image Builder"
+    echo "========================="
     echo "  Image size:   ${IMG_SIZE}MB"
-fi
-if [ -f "$PATCHES_DIR/.config" ]; then
-    LINUX_BRANCH="v$(grep -m1 "^# Linux/" "$PATCHES_DIR/.config" | grep -oP '\d+\.\d+(\.\d+)?')"
-    echo "  Kernel:       $LINUX_BRANCH"
-else
-    echo "  Kernel:       (will fetch)"
-fi
-echo "  Kernel src:   $KERNEL_SRC"
-echo ""
-echo "Stages:"
-if [ "$SKIP_KERNEL" = true ]; then
-    echo "  1. Kernel            cached"
-elif [ -d "$KERNEL_SRC/.git" ]; then
-    echo "  1. Kernel            build (source cached)"
-else
-    echo "  1. Kernel            clone + build"
-fi
-if [ "$KERNEL_ONLY" = false ]; then
-    if [ "$SKIP_CHROOT" = true ]; then
-        echo "  2. Root filesystem   cached"
+    echo "  FreeBSD src:  ${FREEBSD_SRC:-<prebuilt root only>}"
+    echo "  FreeBSD root: $FREEBSD_ROOT"
+    echo "  Build root:   $FREEBSD_BUILD"
+    [ "$FREEBSD_BUILD" = true ] && echo "  Backend:      $FREEBSD_BUILD_BACKEND"
+    echo ""
+    echo "Stages:"
+    if [ "$FREEBSD_BUILD" = true ]; then
+        echo "  1. FreeBSD root      build"
     else
-        echo "  2. Root filesystem   build"
+        echo "  1. FreeBSD root      prebuilt"
     fi
-    echo "  3. Disk image        build"
+    echo "  2. Disk image        build"
+else
+    echo "PS5 Linux Image Builder"
+    echo "======================="
+    if [ "$KERNEL_ONLY" = true ]; then
+        echo "  Mode:         kernel only"
+        echo "  Format:       $FORMAT"
+    else
+        echo "  Distro:       $DISTRO"
+        [ "$DISTRO" = "all" ] && echo "                ($MULTI_DISTROS)"
+        echo "  Image size:   ${IMG_SIZE}MB"
+    fi
+    if [ -f "$PATCHES_DIR/.config" ]; then
+        LINUX_BRANCH="v$(grep -m1 "^# Linux/" "$PATCHES_DIR/.config" | grep -oP '\d+\.\d+(\.\d+)?')"
+        echo "  Kernel:       $LINUX_BRANCH"
+    else
+        echo "  Kernel:       (will fetch)"
+    fi
+    echo "  Kernel src:   $KERNEL_SRC"
+    echo ""
+    echo "Stages:"
+    if [ "$SKIP_KERNEL" = true ]; then
+        echo "  1. Kernel            cached"
+    elif [ -d "$KERNEL_SRC/.git" ]; then
+        echo "  1. Kernel            build (source cached)"
+    else
+        echo "  1. Kernel            clone + build"
+    fi
+    if [ "$KERNEL_ONLY" = false ]; then
+        if [ "$SKIP_CHROOT" = true ]; then
+            echo "  2. Root filesystem   cached"
+        else
+            echo "  2. Root filesystem   build"
+        fi
+        echo "  3. Disk image        build"
+    fi
 fi
 echo ""
 echo "Logs: $LOG_FILE"
@@ -251,6 +313,112 @@ if [ "$DISTRO" = "all" ]; then
     for d in $MULTI_DISTROS; do
         mkdir -p "$SCRIPT_DIR/work/chroot-$d"
     done
+fi
+
+if [ "$DISTRO" = "freebsd" ]; then
+    if [ "$FREEBSD_BUILD" = true ]; then
+        if [ -z "$FREEBSD_SRC" ] || [ ! -d "$FREEBSD_SRC/sys" ]; then
+            echo "FreeBSD source tree not found. Pass --freebsd-src or --skip-freebsd-build --freebsd-root."
+            exit 1
+        fi
+        FREEBSD_SRC="$(cd "$FREEBSD_SRC" && pwd)"
+    fi
+    mkdir -p "$(dirname "$FREEBSD_ROOT")" "$SCRIPT_DIR/work/freebsd-qemu"
+    FREEBSD_ROOT="$(cd "$(dirname "$FREEBSD_ROOT")" && pwd)/$(basename "$FREEBSD_ROOT")"
+    if [ -n "$FREEBSD_VM_IMAGE" ]; then
+        FREEBSD_VM_IMAGE="$(cd "$(dirname "$FREEBSD_VM_IMAGE")" && pwd)/$(basename "$FREEBSD_VM_IMAGE")"
+    fi
+    if [ -n "$FREEBSD_VM_SSH_KEY" ]; then
+        FREEBSD_VM_SSH_KEY="$(cd "$(dirname "$FREEBSD_VM_SSH_KEY")" && pwd)/$(basename "$FREEBSD_VM_SSH_KEY")"
+    fi
+
+    if [ "$FREEBSD_BUILD" = true ]; then
+        case "$FREEBSD_BUILD_BACKEND" in
+            host)
+                run_stage "Build FreeBSD PS5 root (host)" \
+                    "$SCRIPT_DIR/scripts/build-freebsd-root.sh" "$FREEBSD_SRC" "$FREEBSD_ROOT"
+                ;;
+            qemu)
+                if [ -z "$FREEBSD_VM_IMAGE" ]; then
+                    echo "QEMU backend requires --freebsd-vm-image or FREEBSD_VM_IMAGE."
+                    echo "Use a FreeBSD VM image with SSH enabled and pass --freebsd-vm-ssh-key if needed."
+                    exit 1
+                fi
+                run_stage "Build FreeBSD QEMU builder image" \
+                    docker build --pull --no-cache \
+                        -t ps5-freebsd-vm-builder \
+                        -f "$SCRIPT_DIR/docker/freebsd-vm-builder/Dockerfile" "$SCRIPT_DIR"
+
+                QEMU_DOCKER_ARGS=(
+                    docker run --rm --privileged --name "$DOCKER_NAME"
+                    -v "$FREEBSD_SRC":/freebsd-src:ro
+                    -v "$(dirname "$FREEBSD_ROOT")":/out-root
+                    -v "$(dirname "$FREEBSD_VM_IMAGE")":/vm:ro
+                    -v "$SCRIPT_DIR/work/freebsd-qemu":/qemu-work
+                    -e KERNCONF="${KERNCONF:-PS5}"
+                    -e TARGET="${TARGET:-amd64}"
+                    -e TARGET_ARCH="${TARGET_ARCH:-amd64}"
+                    -e JOBS="${JOBS:-}"
+                    -e FREEBSD_QEMU_WORKDIR=/qemu-work
+                    -e FREEBSD_QEMU_SSH_PORT="${FREEBSD_QEMU_SSH_PORT:-10022}"
+                    -e FREEBSD_QEMU_MEMORY="${FREEBSD_QEMU_MEMORY:-8192}"
+                    -e FREEBSD_QEMU_CPUS="${FREEBSD_QEMU_CPUS:-}"
+                )
+                if [ -n "$FREEBSD_VM_SSH_KEY" ]; then
+                    QEMU_DOCKER_ARGS+=(-v "$(dirname "$FREEBSD_VM_SSH_KEY")":/ssh-key:ro)
+                    FREEBSD_VM_SSH_KEY_IN_CONTAINER="/ssh-key/$(basename "$FREEBSD_VM_SSH_KEY")"
+                else
+                    FREEBSD_VM_SSH_KEY_IN_CONTAINER=""
+                fi
+                QEMU_DOCKER_ARGS+=(
+                    ps5-freebsd-vm-builder
+                    /freebsd-src
+                    "/out-root/$(basename "$FREEBSD_ROOT")"
+                    "/vm/$(basename "$FREEBSD_VM_IMAGE")"
+                    "$FREEBSD_VM_USER"
+                    "$FREEBSD_VM_SSH_KEY_IN_CONTAINER"
+                )
+                run_stage "Build FreeBSD PS5 root (docker+qemu)" "${QEMU_DOCKER_ARGS[@]}"
+                ;;
+            *)
+                echo "Unsupported FreeBSD build backend: $FREEBSD_BUILD_BACKEND"
+                exit 1
+                ;;
+        esac
+    elif [ ! -d "$FREEBSD_ROOT" ]; then
+        echo "--skip-freebsd-build requires an existing --freebsd-root directory."
+        exit 1
+    fi
+
+    if [ -z "$FREEBSD_KERNEL" ]; then
+        FREEBSD_KERNEL="$FREEBSD_ROOT/boot/kernel/kernel"
+    fi
+    if [ ! -f "$FREEBSD_KERNEL" ]; then
+        echo "FreeBSD kernel ELF not found at $FREEBSD_KERNEL"
+        echo "Pass --freebsd-kernel or build/install KERNCONF=PS5 first."
+        exit 1
+    fi
+
+    run_stage "Build FreeBSD image builder image" \
+        docker build --pull --no-cache \
+            -t ps5-freebsd-image-builder \
+            -f "$SCRIPT_DIR/docker/freebsd-image-builder/Dockerfile" "$SCRIPT_DIR"
+
+    run_stage "Build FreeBSD image (${IMG_SIZE}MB)" \
+        docker run --rm --name "$DOCKER_NAME" \
+            -v "$SCRIPT_DIR":/repo:ro \
+            -v "$OUTPUT_DIR":/output \
+            -v "$FREEBSD_ROOT":/freebsd-root:ro \
+            -v "$(dirname "$FREEBSD_KERNEL")":/freebsd-kernel:ro \
+            -e FREEBSD_KERNEL="/freebsd-kernel/$(basename "$FREEBSD_KERNEL")" \
+            -e IMG_SIZE="$IMG_SIZE" \
+            ps5-freebsd-image-builder
+
+    IMG_PATH="$OUTPUT_DIR/ps5-freebsd.img"
+    echo ""
+    echo "Done! Image: $IMG_PATH"
+    echo "Flash: sudo dd if=$IMG_PATH of=/dev/sdX bs=4M status=progress"
+    exit 0
 fi
 
 # --- Step 1: Kernel ---
