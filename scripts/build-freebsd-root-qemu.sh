@@ -78,7 +78,7 @@ qemu-system-x86_64 \
     -drive file="$OVERLAY",if=virtio,format=qcow2 \
     -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
     -device virtio-net-pci,netdev=net0 \
-    -nographic
+    -display none
 
 echo "=== QEMU: wait for SSH on localhost:$SSH_PORT ==="
 for _ in $(seq 1 180); do
