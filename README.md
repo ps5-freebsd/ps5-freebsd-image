@@ -168,6 +168,17 @@ backend on a Linux Docker host. Linux containers share the Linux host kernel,
 while this build needs FreeBSD userland and kernel semantics for `buildworld`
 and `buildkernel`.
 
+The FreeBSD image builder excludes `/usr/lib/debug` by default so Ubuntu's
+Linux `makefs` package can create the UFS root image. Set
+`FREEBSD_INCLUDE_DEBUG=true` only when using a `makefs` build with large-file
+support. The root filesystem is auto-sized and `growfs_enable="YES"` is added
+so FreeBSD can expand into the full `ps5root` partition on first boot.
+
+See [docs/a53-southbridge-notes.md](docs/a53-southbridge-notes.md) for the
+reusable conclusions from the local `../a53` firmware analysis. Those notes are
+for future FreeBSD kernel drivers; the image builder does not embed A53 firmware
+or decompiler output.
+
 ## Distributions
 
 | Distro | Desktop | Kernel format | Init |
