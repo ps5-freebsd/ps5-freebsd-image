@@ -2,3 +2,8 @@
 vfs.root.mountfrom=ufs:/dev/gpt/ps5root
 boot_verbose=YES
 hw.ps5.platform=1
+hw.ps5.fb.enabled=1
+hw.ps5.fb.width=1920
+hw.ps5.fb.height=1080
+hw.ps5.fb.bpp=32
+hw.ps5.fb.stride=7680
