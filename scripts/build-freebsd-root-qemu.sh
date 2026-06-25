@@ -110,15 +110,15 @@ ssh $SSH_OPTS "$VM_USER@127.0.0.1" \
      sudo rm -rf '$REMOTE_DEST'; \
      sudo mkdir -p '$REMOTE_DEST'; \
      sudo make TARGET='$TARGET' TARGET_ARCH='$TARGET_ARCH' DESTDIR=\$PWD/'$REMOTE_DEST' installworld; \
-     sudo make TARGET='$TARGET' TARGET_ARCH='$TARGET_ARCH' KERNCONF='$KERNCONF' DESTDIR=\$PWD/'$REMOTE_DEST' installkernel; \
      sudo make TARGET='$TARGET' TARGET_ARCH='$TARGET_ARCH' DESTDIR=\$PWD/'$REMOTE_DEST' distribution; \
+     sudo make TARGET='$TARGET' TARGET_ARCH='$TARGET_ARCH' KERNCONF='$KERNCONF' DESTDIR=\$PWD/'$REMOTE_DEST' installkernel; \
      sudo tar -C '$REMOTE_DEST' -cf '$REMOTE_TAR' .; \
      sudo chown '$VM_USER' '$REMOTE_TAR'"
 
 echo "=== QEMU: copy FreeBSD DESTDIR back ==="
 rm -rf "$DESTDIR"
 mkdir -p "$DESTDIR"
-scp $SCP_OPTS "$VM_USER@127.0.0.1:$REMOTE_TAR" "$WORKDIR/$REMOTE_TAR"
+scp $SCP_OPTS "$VM_USER@127.0.0.1:$REMOTE_SRC/$REMOTE_TAR" "$WORKDIR/$REMOTE_TAR"
 tar -C "$DESTDIR" -xf "$WORKDIR/$REMOTE_TAR"
 
 echo "=== QEMU: FreeBSD root installed at $DESTDIR ==="

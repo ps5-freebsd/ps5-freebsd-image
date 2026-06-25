@@ -29,10 +29,10 @@ make -C "$SRC" -j"$JOBS" TARGET="$TARGET" TARGET_ARCH="$TARGET_ARCH" KERNCONF="$
 echo "=== FreeBSD: installworld DESTDIR=$DESTDIR ==="
 make -C "$SRC" TARGET="$TARGET" TARGET_ARCH="$TARGET_ARCH" DESTDIR="$DESTDIR" installworld
 
-echo "=== FreeBSD: installkernel DESTDIR=$DESTDIR ==="
-make -C "$SRC" TARGET="$TARGET" TARGET_ARCH="$TARGET_ARCH" KERNCONF="$KERNCONF" DESTDIR="$DESTDIR" installkernel
-
 echo "=== FreeBSD: distribution DESTDIR=$DESTDIR ==="
 make -C "$SRC" TARGET="$TARGET" TARGET_ARCH="$TARGET_ARCH" DESTDIR="$DESTDIR" distribution
+
+echo "=== FreeBSD: installkernel DESTDIR=$DESTDIR ==="
+make -C "$SRC" TARGET="$TARGET" TARGET_ARCH="$TARGET_ARCH" KERNCONF="$KERNCONF" DESTDIR="$DESTDIR" installkernel
 
 echo "=== FreeBSD root installed at $DESTDIR ==="

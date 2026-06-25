@@ -5,6 +5,8 @@ IMG_SIZE="${IMG_SIZE:-8000}"
 ROOT_LABEL="${ROOT_LABEL:-ps5root}"
 BOOT_LABEL="${BOOT_LABEL:-PS5BOOT}"
 FREEBSD_KERNEL="${FREEBSD_KERNEL:-/freebsd-root/boot/kernel/kernel}"
+FREEBSD_INCLUDE_DEBUG="${FREEBSD_INCLUDE_DEBUG:-false}"
+FREEBSD_ROOTFS_SIZE_MB="${FREEBSD_ROOTFS_SIZE_MB:-}"
 IMG="/output/ps5-freebsd.img"
 TMPIMG="/output/.ps5-freebsd.img.tmp"
 ROOTFS="/tmp/ps5-freebsd-root.ufs"
@@ -36,7 +38,11 @@ BOOT_END_SECTOR=$((ROOT_START_SECTOR - 1))
 echo "=== Staging FreeBSD root ==="
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-rsync -aHAX --numeric-ids /freebsd-root/ "$STAGE/"
+RSYNC_ARGS=(-aHAX --numeric-ids)
+if [ "$FREEBSD_INCLUDE_DEBUG" != "true" ]; then
+    RSYNC_ARGS+=(--exclude=/usr/lib/debug/)
+fi
+rsync "${RSYNC_ARGS[@]}" /freebsd-root/ "$STAGE/"
 
 mkdir -p "$STAGE/etc" "$STAGE/boot" "$STAGE/root"
 cat > "$STAGE/etc/fstab" <<EOF
@@ -52,14 +58,27 @@ sshd_enable="NO"
 dumpdev="NO"
 EOF
 fi
+if ! grep -q '^growfs_enable=' "$STAGE/etc/rc.conf"; then
+    echo 'growfs_enable="YES"' >> "$STAGE/etc/rc.conf"
+fi
 
 if [ ! -f "$STAGE/etc/ttys" ]; then
     touch "$STAGE/etc/ttys"
 fi
 
-echo "=== Creating UFS root image (${ROOT_SIZE_MB}MiB) ==="
+echo "=== Creating UFS root image ==="
 rm -f "$ROOTFS"
-makefs -t ffs -o version=2 -s "${ROOT_SIZE_MB}m" "$ROOTFS" "$STAGE"
+if [ -n "$FREEBSD_ROOTFS_SIZE_MB" ]; then
+    makefs -t ffs -o version=2 -s "${FREEBSD_ROOTFS_SIZE_MB}m" "$ROOTFS" "$STAGE"
+else
+    makefs -t ffs -o version=2 "$ROOTFS" "$STAGE"
+fi
+ROOTFS_BYTES=$(stat -c '%s' "$ROOTFS")
+ROOT_PART_BYTES=$((ROOT_SIZE_MB * 1024 * 1024))
+if [ "$ROOTFS_BYTES" -gt "$ROOT_PART_BYTES" ]; then
+    echo "ERROR: UFS root image is larger than the root partition" >&2
+    exit 1
+fi
 
 echo "=== Creating FAT PS5 loader partition (${BOOT_SIZE_MB}MiB) ==="
 rm -f "$BOOTFS"
